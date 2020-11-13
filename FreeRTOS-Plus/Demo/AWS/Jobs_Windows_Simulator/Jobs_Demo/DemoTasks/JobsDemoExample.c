@@ -354,8 +354,12 @@ static void prvEventCallback( MQTTContext_t * pxMqttContext,
  *
  * @param[in] pPublishInfo Deserialized publish info pointer for the incoming
  * packet.
+ * @param[in] xTopicType The type of topic from the MQTT APIs of the AWS IoT Jobs service
+ * that we have received the incoming message from. It should be either of the
+ * NextJobExecutionChanged or StartNextPendingJobExecution API topics.
  */
-static void prvNextJobHandler( MQTTPublishInfo_t * pxPublishInfo );
+static void prvNextJobHandler( MQTTPublishInfo_t * pxPublishInfo,
+                               JobsTopic_t xTopicType );
 
 /**
  * @brief Sends an update for a job to the UpdateJobExecution API of the AWS IoT Jobs service.
@@ -510,6 +514,28 @@ void vTimerCallback( TimerHandle_t xTimer )
     }
 }
 
+BaseType_t prvNextJobChangedHandler( MQTTPublishInfo_t * pxPublishInfo,
+                                     char * pcJobId,
+                                     uint16_t usJobIdLength )
+{
+    /* Check if there is an already running job.*/
+    configASSERT( pxPublishInfo != NULL );
+    configASSERT( ( pxPublishInfo->pPayload != NULL ) && ( pxPublishInfo->payloadLength > 0 ) );
+
+    if( xTimerIsTimerActive( xCountJobTimer ) == pdTRUE )
+    {
+        LogWarn( ( "Received notification of a new job while the \"count\" job is executing. "
+                   "Sending a \"REJECTED\" update to the service: NewJobId=%.*s",
+                   usJobIdLength, pcJobId ) );
+        prvSendUpdateForJob( pcJobId, usJobIdLength, MAKE_STATUS_REPORT( "REJECTED" ) );
+    }
+    else
+    {
+        prvProcessJobDocument( pxPublishInfo, pxPublishInfo, usJobIdLength );
+    }
+}
+
+
 static void prvProcessJobDocument( MQTTPublishInfo_t * pxPublishInfo,
                                    char * pcJobId,
                                    uint16_t usJobIdLength )
@@ -640,11 +666,15 @@ static void prvProcessJobDocument( MQTTPublishInfo_t * pxPublishInfo,
             case JOB_ACTION_COUNT:
                 LogInfo( ( "Received job contains \"count\" action. Starting the periodic counter." ) );
 
-                if( xCountJobTimer != NULL )
+                if( xTimerIsTimerActive( xCountJobTimer ) != pdFALSE )
                 {
-                    LogWarn( ( "Cancelling existing counter job: JobId=%.*s",
-                               usCounterJobIdLength, pcCounterJobId ) );
+                    LogError( ( "Received Cancelling existing counter job: JobId=%.*s",
+                                usCounterJobIdLength, pcCounterJobId ) );
+
+                    /* Stop the timer and terminate the demo as we have received request for a new "count" job
+                     * while an existing "count" job is running. */
                     xTimerStop( xTimer, 0 );
+                    xDemoEncounteredError = pdTRUE;
                 }
                 else
                 {
@@ -688,10 +718,12 @@ static void prvProcessJobDocument( MQTTPublishInfo_t * pxPublishInfo,
     }
 }
 
-static void prvNextJobHandler( MQTTPublishInfo_t * pxPublishInfo )
+static void prvNextJobHandler( MQTTPublishInfo_t * pxPublishInfo,
+                               JobsTopic_t xTopicType )
 {
     configASSERT( pxPublishInfo != NULL );
     configASSERT( ( pxPublishInfo->pPayload != NULL ) && ( pxPublishInfo->payloadLength > 0 ) );
+    configASSERT( ( xTopicType == JobsStartNextSuccess ) || ( xTopicType == JobsNextJobChanged ) );
 
     /* Check validity of JSON message response from server.*/
     if( JSON_Validate( pxPublishInfo->pPayload, pxPublishInfo->payloadLength ) != JSONSuccess )
@@ -722,8 +754,15 @@ static void prvNextJobHandler( MQTTPublishInfo_t * pxPublishInfo )
             LogInfo( ( "Received a Job from AWS IoT Jobs service: JobId=%.*s",
                        ulJobIdLength, pcJobId ) );
 
-            /* Process the Job document and execute the job. */
-            prvProcessJobDocument( pxPublishInfo, pcJobId, ( uint16_t ) ulJobIdLength );
+            if( xTopicType == JobsStartNextSuccess )
+            {
+                /* Process the Job document and execute the job. */
+                prvProcessJobDocument( pxPublishInfo, pcJobId, ( uint16_t ) ulJobIdLength );
+            }
+            else
+            {
+                prvNextJobChangedHandler( pxPublishInfo, pcJobId, ( uint16_t ) ulJobIdLength );
+            }
         }
     }
 }
@@ -755,7 +794,7 @@ static void prvEventCallback( MQTTContext_t * pxMqttContext,
     if( ( pxPacketInfo->type & 0xF0U ) == MQTT_PACKET_TYPE_PUBLISH )
     {
         configASSERT( pxDeserializedInfo->pPublishInfo != NULL );
-        JobsTopic_t topicType = JobsMaxTopic;
+        JobsTopic_t xTopicType = JobsMaxTopic;
         JobsStatus_t xStatus = JobsError;
         char * pcJobId = NULL;
         uint16_t usJobIdLength = 0;
@@ -769,50 +808,58 @@ static void prvEventCallback( MQTTContext_t * pxMqttContext,
                                    pxDeserializedInfo->pPublishInfo->topicNameLength,
                                    democonfigTHING_NAME,
                                    THING_NAME_LENGTH,
-                                   &topicType,
+                                   &xTopicType,
                                    &pcJobId,
                                    &usJobIdLength );
 
         if( xStatus == JobsSuccess )
         {
             /* Upon successful return, the messageType has been filled in. */
-            if( ( topicType == JobsStartNextSuccess ) || ( topicType == JobsNextJobChanged ) )
+            if( ( xTopicType == JobsStartNextSuccess ) || ( xTopicType == JobsNextJobChanged ) )
             {
                 /* Handler function to process payload. */
-                prvNextJobHandler( pxDeserializedInfo->pPublishInfo );
+                prvNextJobHandler( pxDeserializedInfo->pPublishInfo, xTopicType );
             }
-            else if( topicType == JobsUpdateSuccess )
+            else if( xTopicType == JobsUpdateSuccess )
             {
                 LogInfo( ( "Job update status request has been accepted by AWS Iot Jobs service." ) );
             }
-            else if( topicType == JobsStartNextFailed )
+            else if( xTopicType == JobsStartNextFailed )
             {
                 LogWarn( ( "Request for next job description rejected: RejectedResponse=%.*s.",
                            pxDeserializedInfo->pPublishInfo->payloadLength,
                            ( const char * ) pxDeserializedInfo->pPublishInfo->pPayload ) );
             }
-            else if( topicType == JobsUpdateFailed )
+            else if( xTopicType == JobsUpdateFailed )
             {
-                /* Set the global flag to terminate the demo, because the request for updating and executing the job status
-                 * has been rejected by the AWS IoT Jobs service. */
-                xDemoEncounteredError = pdTRUE;
-
                 LogWarn( ( "Request for job update rejected: RejectedResponse=%.*s.",
                            pxDeserializedInfo->pPublishInfo->payloadLength,
                            ( const char * ) pxDeserializedInfo->pPublishInfo->pPayload ) );
 
-                LogError( ( "Terminating demo as request to update job status has been rejected by "
-                            "AWS IoT Jobs service..." ) );
-
-                if( ( xCountJobTimer != NULL ) && ( strncmp( pcJobId, pcCounterJobId, usCounterJobIdLength ) == 0 ) )
+                /* Check if the rejected update is received for a currently executing "count" job. */
+                if( ( xTimerIsTimerActive( xCountJobTimer ) == pdPASS ) &&
+                    ( strncmp( pcJobId, pcCounterJobId, usCounterJobIdLength ) == 0 ) )
                 {
-                    xTimerStop( xTimer, 0 );
+                    /* Cancel the periodic counter job as the job may have been canceled on the service. */
+                    xTimerStop( xCountJobTimer, 0 );
+
+                    LogWarn( ( "Terminating the running \"count\" job. Job may have been canceled on service. JobId=%.*s",
+                               usJobIdLength, pcJobId ) );
+                }
+                else
+                {
+                    /* Set the global flag to terminate the demo, because the request for updating and executing the job status
+                     * has been rejected by the AWS IoT Jobs service. */
+                    xDemoEncounteredError = pdTRUE;
+
+                    LogError( ( "Terminating demo as request to update job status has been rejected by "
+                                "AWS IoT Jobs service..." ) );
                 }
             }
             else
             {
                 LogWarn( ( "Received an unexpected messages from AWS IoT Jobs service: "
-                           "JobsTopicType=%u", topicType ) );
+                           "JobsTopicType=%u", xTopicType ) );
             }
         }
         else if( xStatus == JobsNoMatch )
