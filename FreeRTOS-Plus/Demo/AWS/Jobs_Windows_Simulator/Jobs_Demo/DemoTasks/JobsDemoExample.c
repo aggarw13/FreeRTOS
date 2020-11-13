@@ -258,6 +258,12 @@ typedef enum JobActionType
     JOB_ACTION_UNKNOWN  /**< Unknown action. */
 } JobActionType;
 
+/*typedef struct CountContext
+{
+    uint32_t maxCount;
+    
+}CountContext_t;*/
+
 /*-----------------------------------------------------------*/
 
 /**
@@ -300,6 +306,8 @@ static BaseType_t xDemoEncounteredError = pdFALSE;
 
 static StaticTimer_t xTimerBuffer;
 TimerHandle_t xTimer;
+static char pcCounterJobId[JOBS_JOBID_MAX_LENGTH];
+static uint8_t usCounterJobIdLength;
 
 /*-----------------------------------------------------------*/
 
@@ -452,14 +460,14 @@ static void prvSendUpdateForJob( char * pcJobId,
     }
 }
 
-void vTimerCallback( TimerHandle_t xTimer )
+void vTimerCallback( TimerHandle_t xCallbackTimer )
 {
     const uint32_t ulMaxExpiryCountBeforeStopping = 10;
     uint32_t ulCount;
 
     /* The number of times this timer has expired is saved as the
      * timer's ID.  Obtain the count. */
-    ulCount = ( uint32_t ) pvTimerGetTimerID( xTimer );
+    ulCount = ( uint32_t ) pvTimerGetTimerID(xCallbackTimer);
 
     /* Increment the count, then test to see if the timer has expired
      * ulMaxExpiryCountBeforeStopping yet. */
@@ -469,19 +477,21 @@ void vTimerCallback( TimerHandle_t xTimer )
     /* If the timer has expired 10 times then stop it from running. */
     if( ulCount >= ulMaxExpiryCountBeforeStopping )
     {
-        /*  prvSendUpdateForJob( pcJobId, usJobIdLength, MAKE_STATUS_REPORT( "SUCCEEDED" ) ); */
+         prvSendUpdateForJob( pcCounterJobId, usCounterJobIdLength, MAKE_STATUS_REPORT( "SUCCEEDED" ) ); 
 
         /* Do not use a block time if calling a timer API function
          * from a timer callback function, as doing so could cause a
          * deadlock! */
-        xTimerStop( xTimer, 0 );
+        xTimerStop(xCallbackTimer, 0 );
     }
     else
     {
+        prvSendUpdateForJob(pcCounterJobId, usCounterJobIdLength, MAKE_STATUS_REPORT("IN_PROGRESS"));
+
         /* Store the incremented count back into the timer's ID field
          * so it can be read back again the next time this software timer
          * expires. */
-        vTimerSetTimerID( xTimer, ( void * ) ulCount );
+        vTimerSetTimerID(xCallbackTimer, ( void * ) ulCount );
     }
 }
 
@@ -614,14 +624,44 @@ static void prvProcessJobDocument( MQTTPublishInfo_t * pxPublishInfo,
 
             case JOB_ACTION_COUNT:
                 LogInfo( ( "Received job contains \"count\" action. Starting the periodic counter." ) );
-                xTimer = xTimerCreateStatic(
-                    "Timer",
-                    pdMS_TO_TICKS( 1000 ),
-                    pdTRUE,
-                    ( void * ) 0,
-                    vTimerCallback,
-                    &xTimerBuffer );
-                prvSendUpdateForJob( pcJobId, usJobIdLength, MAKE_STATUS_REPORT( "IN_PROGRESS" ) );
+                if (xTimer != NULL)
+                {
+                    LogWarn(("Cancelling existing counter job: JobId=%.*s",
+                        usCounterJobIdLength, pcCounterJobId));
+                    xTimerStop(xTimer, 0);
+                }
+                else
+                {
+                    xTimer = xTimerCreateStatic(
+                        "Timer",
+                        pdMS_TO_TICKS(1000),
+                        pdTRUE,
+                        (void*)0,
+                        vTimerCallback,
+                        &xTimerBuffer);
+                }
+
+                if (xTimer != NULL)
+                {
+                    /* Copy the Job ID into a separate buffer so that the job can be updated later. */
+                    strncpy(pcCounterJobId, pcJobId, usJobIdLength);
+                    usCounterJobIdLength = usJobIdLength;
+
+                    if (xTimerStart(xTimer, 0) != pdPASS)
+                    {
+                        prvSendUpdateForJob(pcJobId, usJobIdLength, MAKE_STATUS_REPORT("FAILED"));
+                        LogError(("Failed to execute \"count\" job. Failed to start periodic timer"));
+                    }
+                    else
+                    {
+                        prvSendUpdateForJob(pcJobId, usJobIdLength, MAKE_STATUS_REPORT("IN_PROGRESS"));
+                    }
+                }
+                else
+                {
+                    LogError(("Failed to execute \"count\" job. Failed to initialize static timer"));
+                }
+                break;
 
             default:
                 configPRINTF( ( "Received Job document with unknown action %.*s.",
@@ -700,6 +740,8 @@ static void prvEventCallback( MQTTContext_t * pxMqttContext,
         configASSERT( pxDeserializedInfo->pPublishInfo != NULL );
         JobsTopic_t topicType = JobsMaxTopic;
         JobsStatus_t xStatus = JobsError;
+        char* pcJobId = NULL;
+        uint16_t usJobIdLength = 0;
 
         LogDebug( ( "Received an incoming publish message: TopicName=%.*s",
                     pxDeserializedInfo->pPublishInfo->topicNameLength,
@@ -711,8 +753,8 @@ static void prvEventCallback( MQTTContext_t * pxMqttContext,
                                    democonfigTHING_NAME,
                                    THING_NAME_LENGTH,
                                    &topicType,
-                                   NULL,
-                                   NULL );
+                                   &pcJobId,
+                                   &usJobIdLength);
 
         if( xStatus == JobsSuccess )
         {
@@ -744,6 +786,11 @@ static void prvEventCallback( MQTTContext_t * pxMqttContext,
 
                 LogError( ( "Terminating demo as request to update job status has been rejected by "
                             "AWS IoT Jobs service..." ) );
+
+                if ((xTimer != NULL) && (strncmp(pcJobId, pcCounterJobId, usCounterJobIdLength) == 0))
+                {
+                    xTimerStop(xTimer , 0);
+                }
             }
             else
             {
