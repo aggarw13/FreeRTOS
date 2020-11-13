@@ -47,11 +47,16 @@
  * jobs queued (as JSON documents) for the Thing resource (associated with this demo application) on the cloud,
  * then executes the jobs and updates the status of the jobs back to the cloud.
  * The demo expects job documents to have an "action" JSON key. Actions can
- * be one of "print", "publish", or "exit".
+ * be one of "print", "publish", "count" or "exit".
  * A "print" job logs a message to the local console, and must contain a "message",
  * e.g. { "action": "print", "message": "Hello World!" }.
  * A "publish" job publishes a message to an MQTT Topic. The job document must
  * contain a "message" and "topic" to publish to, e.g.
+ * { "action": "publish", "topic": "demo/jobs", "message": "Hello World!" }.
+ * A "periodic counter" job starts a periodic timer that prints an incrementing counter value
+ * to the console until the maximum counter value is reached. The job document must
+ * contain a "max" entry for the maximum value to increment the counter to, e.g.
+ * { "action": "count", "max": "10" }.
  * { "action": "publish", "topic": "demo/jobs", "message": "Hello World!" }.
  * An "exit" job exits the demo. Sending { "action": "exit" } will end the demo program.
  */
@@ -68,6 +73,7 @@
 /* Kernel includes. */
 #include "FreeRTOS.h"
 #include "task.h"
+#include "timers.h"
 
 /* Jobs library header. */
 #include "jobs.h"
@@ -180,6 +186,36 @@
 #define jobsexampleQUERY_KEY_FOR_TOPIC_LENGTH       ( sizeof( jobsexampleQUERY_KEY_FOR_TOPIC ) - 1 )
 
 /**
+ * @brief The query key to use for searching the topic key in Jobs document
+ * from AWS IoT Jobs service.
+ *
+ * This demo program expects this key to be in the Job document if the "action"
+ * is "publish". It represents the MQTT topic on which the message should be
+ * published.
+ */
+#define jobsexampleQUERY_KEY_FOR_COUNT              jobsexampleQUERY_KEY_FOR_JOBS_DOC ".count"
+
+/**
+ * @brief The length of #jobsexampleQUERY_KEY_FOR_COUNT.
+ */
+#define jobsexampleQUERY_KEY_FOR_COUNT_LENGTH       ( sizeof( jobsexampleQUERY_KEY_FOR_TOPIC ) - 1 )
+
+/**
+ * @brief The query key to use for searching the topic key in Jobs document
+ * from AWS IoT Jobs service.
+ *
+ * This demo program expects this key to be in the Job document if the "action"
+ * is "publish". It represents the MQTT topic on which the message should be
+ * published.
+ */
+#define jobsexampleQUERY_KEY_FOR_MAX                jobsexampleQUERY_KEY_FOR_JOBS_DOC ".max"
+
+/**
+ * @brief The length of #jobsexampleQUERY_KEY_FOR_MAX.
+ */
+#define jobsexampleQUERY_KEY_FOR_MAX_LENGTH         ( sizeof( jobsexampleQUERY_KEY_FOR_TOPIC ) - 1 )
+
+/**
  * @brief Utility macro to generate the PUBLISH topic string to the
  * DescribePendingJobExecution API of AWS IoT Jobs service for requesting
  * the next pending job information.
@@ -217,6 +253,7 @@ typedef enum JobActionType
 {
     JOB_ACTION_PRINT,   /**< Print a message. */
     JOB_ACTION_PUBLISH, /**< Publish a message to an MQTT topic. */
+    JOB_ACTION_COUNT,   /**< Start a periodic counter. */
     JOB_ACTION_EXIT,    /**< Exit the demo. */
     JOB_ACTION_UNKNOWN  /**< Unknown action. */
 } JobActionType;
@@ -260,6 +297,9 @@ static BaseType_t xExitActionJobReceived = pdFALSE;
  * @note When this flag is set, the demo terminates execution.
  */
 static BaseType_t xDemoEncounteredError = pdFALSE;
+
+static StaticTimer_t xTimerBuffer;
+TimerHandle_t xTimer;
 
 /*-----------------------------------------------------------*/
 
@@ -354,6 +394,10 @@ static JobActionType prvGetAction( const char * pcAction,
     {
         xAction = JOB_ACTION_PUBLISH;
     }
+    else if( strncmp( pcAction, "count", xActionLength ) == 0 )
+    {
+        xAction = JOB_ACTION_COUNT;
+    }
     else if( strncmp( pcAction, "exit", xActionLength ) == 0 )
     {
         xAction = JOB_ACTION_EXIT;
@@ -408,6 +452,38 @@ static void prvSendUpdateForJob( char * pcJobId,
     }
 }
 
+void vTimerCallback( TimerHandle_t xTimer )
+{
+    const uint32_t ulMaxExpiryCountBeforeStopping = 10;
+    uint32_t ulCount;
+
+    /* The number of times this timer has expired is saved as the
+     * timer's ID.  Obtain the count. */
+    ulCount = ( uint32_t ) pvTimerGetTimerID( xTimer );
+
+    /* Increment the count, then test to see if the timer has expired
+     * ulMaxExpiryCountBeforeStopping yet. */
+    ulCount++;
+
+    /* If the timer has expired 10 times then stop it from running. */
+    if( ulCount >= ulMaxExpiryCountBeforeStopping )
+    {
+        /*  prvSendUpdateForJob( pcJobId, usJobIdLength, MAKE_STATUS_REPORT( "SUCCEEDED" ) ); */
+
+        /* Do not use a block time if calling a timer API function
+         * from a timer callback function, as doing so could cause a
+         * deadlock! */
+        xTimerStop( xTimer, 0 );
+    }
+    else
+    {
+        /* Store the incremented count back into the timer's ID field
+         * so it can be read back again the next time this software timer
+         * expires. */
+        vTimerSetTimerID( xTimer, ( void * ) ulCount );
+    }
+}
+
 static void prvProcessJobDocument( MQTTPublishInfo_t * pxPublishInfo,
                                    char * pcJobId,
                                    uint16_t usJobIdLength )
@@ -445,6 +521,7 @@ static void prvProcessJobDocument( MQTTPublishInfo_t * pxPublishInfo,
                 LogInfo( ( "Received job contains \"exit\" action. Updating state of demo." ) );
                 xExitActionJobReceived = pdTRUE;
                 prvSendUpdateForJob( pcJobId, usJobIdLength, MAKE_STATUS_REPORT( "SUCCEEDED" ) );
+                xTimerStop( xTimer, 0 );
                 break;
 
             case JOB_ACTION_PRINT:
@@ -533,6 +610,16 @@ static void prvProcessJobDocument( MQTTPublishInfo_t * pxPublishInfo,
                 }
 
                 break;
+
+            case JOB_ACTION_COUNT:
+                xTimer = xTimerCreateStatic(
+                    "Timer",
+                    pdMS_TO_TICKS( 1000 ),
+                    pdTRUE,
+                    ( void * ) 0,
+                    vTimerCallback,
+                    &xTimerBuffer );
+                prvSendUpdateForJob( pcJobId, usJobIdLength, MAKE_STATUS_REPORT( "IN_PROGRESS" ) );
 
             default:
                 configPRINTF( ( "Received Job document with unknown action %.*s.",
