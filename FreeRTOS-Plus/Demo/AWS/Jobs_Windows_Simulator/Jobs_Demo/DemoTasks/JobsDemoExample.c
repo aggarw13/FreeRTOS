@@ -201,19 +201,15 @@
 #define jobsexampleQUERY_KEY_FOR_COUNT_LENGTH       ( sizeof( jobsexampleQUERY_KEY_FOR_TOPIC ) - 1 )
 
 /**
- * @brief The query key to use for searching the topic key in Jobs document
- * from AWS IoT Jobs service.
- *
- * This demo program expects this key to be in the Job document if the "action"
- * is "publish". It represents the MQTT topic on which the message should be
- * published.
+ * @brief The maximum value that the "count" job should increment the counter
+ * to while executing.
  */
-#define jobsexampleQUERY_KEY_FOR_MAX                jobsexampleQUERY_KEY_FOR_JOBS_DOC ".max"
+#define COUNT_JOB_MAX_COUNTER_VALUE                 ( 10U )
 
 /**
- * @brief The length of #jobsexampleQUERY_KEY_FOR_MAX.
+ * @brief The periodicity (in milliseconds) of incrementing the counter when executing the "count" job.
  */
-#define jobsexampleQUERY_KEY_FOR_MAX_LENGTH         ( sizeof( jobsexampleQUERY_KEY_FOR_TOPIC ) - 1 )
+#define COUNT_JOB_TIMER_PERIOD                      ( 1000U )
 
 /**
  * @brief Utility macro to generate the PUBLISH topic string to the
@@ -258,12 +254,6 @@ typedef enum JobActionType
     JOB_ACTION_UNKNOWN  /**< Unknown action. */
 } JobActionType;
 
-/*typedef struct CountContext
- * {
- *  uint32_t maxCount;
- *
- * }CountContext_t;*/
-
 /*-----------------------------------------------------------*/
 
 /**
@@ -304,9 +294,26 @@ static BaseType_t xExitActionJobReceived = pdFALSE;
  */
 static BaseType_t xDemoEncounteredError = pdFALSE;
 
+/**
+ * @brief Statically allocated memory for the periodic timer used for the "count"
+ * job.
+ */
 static StaticTimer_t xTimerBuffer;
-static TimerHandle_t xTimer;
+
+/**
+ * @brief The timer handle for the periodic timer used for executing the "count" job.
+ */
+static TimerHandle_t xCountJobTimer;
+
+/**
+ * @brief The buffer to store the job ID of the "count" job received from the
+ * AWS IoT Jobs service.
+ */
 static char pcCounterJobId[ JOBS_JOBID_MAX_LENGTH ];
+
+/**
+ * @brief The length of the job ID string that is stored in #pcCounterJobId.
+ */
 static uint8_t usCounterJobIdLength;
 
 /*-----------------------------------------------------------*/
@@ -361,6 +368,15 @@ static void prvNextJobHandler( MQTTPublishInfo_t * pxPublishInfo );
 static void prvSendUpdateForJob( char * pcJobId,
                                  uint16_t usJobIdLength,
                                  const char * pcJobStatusReport );
+
+/**
+ * @brief The timer callback used for the "count" job. It increments the counter value,
+ * prints to the console and updates the status of the job back to AWS IoT Jobs service
+ * depending on whether the maximum counter value is reached.
+ *
+ * @param[in] xTimer The timer handle with which the callback is registered.
+ */
+static void vTimerCallback( TimerHandle_t xTimer );
 
 /**
  * @brief Executes a job received from AWS IoT Jobs service and sends an update back to the service.
@@ -460,14 +476,13 @@ static void prvSendUpdateForJob( char * pcJobId,
     }
 }
 
-void vTimerCallback( TimerHandle_t xCallbackTimer )
+void vTimerCallback( TimerHandle_t xTimer )
 {
-    const uint32_t ulMaxExpiryCountBeforeStopping = 10;
     uint32_t ulCount;
 
     /* The number of times this timer has expired is saved as the
      * timer's ID.  Obtain the count. */
-    ulCount = ( uint32_t ) pvTimerGetTimerID( xCallbackTimer );
+    ulCount = ( uint32_t ) pvTimerGetTimerID( xTimer );
 
     /* Increment the count, then test to see if the timer has expired
      * ulMaxExpiryCountBeforeStopping yet. */
@@ -475,14 +490,14 @@ void vTimerCallback( TimerHandle_t xCallbackTimer )
     LogInfo( ( "Periodic counter job: Current count=%lu", ulCount ) );
 
     /* If the timer has expired 10 times then stop it from running. */
-    if( ulCount >= ulMaxExpiryCountBeforeStopping )
+    if( ulCount >= COUNT_JOB_MAX_COUNTER_VALUE )
     {
         prvSendUpdateForJob( pcCounterJobId, usCounterJobIdLength, MAKE_STATUS_REPORT( "SUCCEEDED" ) );
 
         /* Do not use a block time if calling a timer API function
          * from a timer callback function, as doing so could cause a
          * deadlock! */
-        xTimerStop( xCallbackTimer, 0 );
+        xTimerStop( xTimer, 0 );
     }
     else
     {
@@ -491,7 +506,7 @@ void vTimerCallback( TimerHandle_t xCallbackTimer )
         /* Store the incremented count back into the timer's ID field
          * so it can be read back again the next time this software timer
          * expires. */
-        vTimerSetTimerID( xCallbackTimer, ( void * ) ulCount );
+        vTimerSetTimerID( xTimer, ( void * ) ulCount );
     }
 }
 
@@ -625,7 +640,7 @@ static void prvProcessJobDocument( MQTTPublishInfo_t * pxPublishInfo,
             case JOB_ACTION_COUNT:
                 LogInfo( ( "Received job contains \"count\" action. Starting the periodic counter." ) );
 
-                if( xTimer != NULL )
+                if( xCountJobTimer != NULL )
                 {
                     LogWarn( ( "Cancelling existing counter job: JobId=%.*s",
                                usCounterJobIdLength, pcCounterJobId ) );
@@ -633,16 +648,16 @@ static void prvProcessJobDocument( MQTTPublishInfo_t * pxPublishInfo,
                 }
                 else
                 {
-                    xTimer = xTimerCreateStatic(
+                    xCountJobTimer = xTimerCreateStatic(
                         "Timer",
-                        pdMS_TO_TICKS( 1000 ),
+                        pdMS_TO_TICKS( COUNT_JOB_TIMER_PERIOD ),
                         pdTRUE,
                         ( void * ) 0,
                         vTimerCallback,
                         &xTimerBuffer );
                 }
 
-                if( xTimer != NULL )
+                if( xCountJobTimer != NULL )
                 {
                     /* Copy the Job ID into a separate buffer so that the job can be updated later. */
                     strncpy( pcCounterJobId, pcJobId, usJobIdLength );
@@ -789,7 +804,7 @@ static void prvEventCallback( MQTTContext_t * pxMqttContext,
                 LogError( ( "Terminating demo as request to update job status has been rejected by "
                             "AWS IoT Jobs service..." ) );
 
-                if( ( xTimer != NULL ) && ( strncmp( pcJobId, pcCounterJobId, usCounterJobIdLength ) == 0 ) )
+                if( ( xCountJobTimer != NULL ) && ( strncmp( pcJobId, pcCounterJobId, usCounterJobIdLength ) == 0 ) )
                 {
                     xTimerStop( xTimer, 0 );
                 }
