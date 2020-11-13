@@ -464,6 +464,7 @@ void vTimerCallback( TimerHandle_t xTimer )
     /* Increment the count, then test to see if the timer has expired
      * ulMaxExpiryCountBeforeStopping yet. */
     ulCount++;
+    LogInfo( ( "Periodic counter job: Current count=%lu", ulCount ) );
 
     /* If the timer has expired 10 times then stop it from running. */
     if( ulCount >= ulMaxExpiryCountBeforeStopping )
@@ -612,6 +613,7 @@ static void prvProcessJobDocument( MQTTPublishInfo_t * pxPublishInfo,
                 break;
 
             case JOB_ACTION_COUNT:
+                LogInfo( ( "Received job contains \"count\" action. Starting the periodic counter." ) );
                 xTimer = xTimerCreateStatic(
                     "Timer",
                     pdMS_TO_TICKS( 1000 ),
