@@ -514,28 +514,6 @@ void vTimerCallback( TimerHandle_t xTimer )
     }
 }
 
-BaseType_t prvNextJobChangedHandler( MQTTPublishInfo_t * pxPublishInfo,
-                                     char * pcJobId,
-                                     uint16_t usJobIdLength )
-{
-    /* Check if there is an already running job.*/
-    configASSERT( pxPublishInfo != NULL );
-    configASSERT( ( pxPublishInfo->pPayload != NULL ) && ( pxPublishInfo->payloadLength > 0 ) );
-
-    if( xTimerIsTimerActive( xCountJobTimer ) == pdTRUE )
-    {
-        LogWarn( ( "Received notification of a new job while the \"count\" job is executing. "
-                   "Sending a \"REJECTED\" update to the service: NewJobId=%.*s",
-                   usJobIdLength, pcJobId ) );
-        prvSendUpdateForJob( pcJobId, usJobIdLength, MAKE_STATUS_REPORT( "REJECTED" ) );
-    }
-    else
-    {
-        prvProcessJobDocument( pxPublishInfo, pxPublishInfo, usJobIdLength );
-    }
-}
-
-
 static void prvProcessJobDocument( MQTTPublishInfo_t * pxPublishInfo,
                                    char * pcJobId,
                                    uint16_t usJobIdLength )
@@ -755,12 +733,28 @@ static void prvNextJobHandler( MQTTPublishInfo_t * pxPublishInfo,
 
             if( xTopicType == JobsStartNextSuccess )
             {
-                /* Process the Job document and execute the job. */
+                /* As message is received as a response for the request to the StartNextJobExecution API,
+                 * we will process the received next job document and execute the job. */
                 prvProcessJobDocument( pxPublishInfo, pcJobId, ( uint16_t ) ulJobIdLength );
             }
             else
             {
-                prvNextJobChangedHandler( pxPublishInfo, pcJobId, ( uint16_t ) ulJobIdLength );
+                /* Process notification from the NextJobExecutionChanged API.*/
+
+                /* Check if there is an already running "count" job.*/
+                if( xTimerIsTimerActive( xCountJobTimer ) == pdTRUE )
+                {
+                    LogWarn( ( "Received notification of a new job while the \"count\" job is executing. "
+                               "Sending a \"REJECTED\" update to the service: NewJobId=%.*s",
+                               usJobIdLength, pcJobId ) );
+                    prvSendUpdateForJob( pcJobId, usJobIdLength, MAKE_STATUS_REPORT( "REJECTED" ) );
+                }
+                else
+                {
+                    /* As there is no currently running job, we can process the notification about
+                     * the next pending job and execute it. */
+                    prvProcessJobDocument( pxPublishInfo, pcJobId, usJobIdLength );
+                }
             }
         }
     }
