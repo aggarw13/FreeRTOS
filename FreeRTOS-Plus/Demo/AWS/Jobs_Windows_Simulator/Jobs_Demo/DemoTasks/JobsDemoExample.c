@@ -747,13 +747,13 @@ static void prvNextJobHandler( MQTTPublishInfo_t * pxPublishInfo,
                     LogWarn( ( "Received notification of a new job while the \"count\" job is executing. "
                                "Sending a \"REJECTED\" update to the service: NewJobId=%.*s",
                                usJobIdLength, pcJobId ) );
-                    prvSendUpdateForJob( pcJobId, usJobIdLength, MAKE_STATUS_REPORT( "REJECTED" ) );
+                    prvSendUpdateForJob( pcJobId, ( uint16_t ) ulJobIdLength, MAKE_STATUS_REPORT( "REJECTED" ) );
                 }
                 else
                 {
                     /* As there is no currently running job, we can process the notification about
                      * the next pending job and execute it. */
-                    prvProcessJobDocument( pxPublishInfo, pcJobId, usJobIdLength );
+                    prvProcessJobDocument( pxPublishInfo, pcJobId, ( uint16_t ) ulJobIdLength );
                 }
             }
         }
