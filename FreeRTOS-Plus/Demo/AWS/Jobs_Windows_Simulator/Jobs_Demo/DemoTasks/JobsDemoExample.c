@@ -573,7 +573,7 @@ static void prvProcessJobDocument( MQTTPublishInfo_t * pxPublishInfo,
                 LogInfo( ( "Received job contains \"exit\" action. Updating state of demo." ) );
                 xExitActionJobReceived = pdTRUE;
                 prvSendUpdateForJob( pcJobId, usJobIdLength, MAKE_STATUS_REPORT( "SUCCEEDED" ) );
-                xTimerStop( xTimer, 0 );
+                xTimerStop( xCountJobTimer, 0 );
                 break;
 
             case JOB_ACTION_PRINT:
@@ -668,12 +668,11 @@ static void prvProcessJobDocument( MQTTPublishInfo_t * pxPublishInfo,
 
                 if( xTimerIsTimerActive( xCountJobTimer ) != pdFALSE )
                 {
-                    LogError( ( "Received Cancelling existing counter job: JobId=%.*s",
-                                usCounterJobIdLength, pcCounterJobId ) );
+                    LogError( ( "Entered incorrect program state. Terminating demo." ) );
 
-                    /* Stop the timer and terminate the demo as we have received request for a new "count" job
-                     * while an existing "count" job is running. */
-                    xTimerStop( xTimer, 0 );
+                    /* Stop the timer and terminate the demo as we have received request for a
+                     * new "count" job while an existing "count" job is running. */
+                    xTimerStop( xCountJobTimer, 0 );
                     xDemoEncounteredError = pdTRUE;
                 }
                 else
@@ -690,10 +689,10 @@ static void prvProcessJobDocument( MQTTPublishInfo_t * pxPublishInfo,
                 if( xCountJobTimer != NULL )
                 {
                     /* Copy the Job ID into a separate buffer so that the job can be updated later. */
-                    strncpy( pcCounterJobId, pcJobId, usJobIdLength );
+                    ( void ) strncpy( pcCounterJobId, pcJobId, usJobIdLength );
                     usCounterJobIdLength = usJobIdLength;
 
-                    if( xTimerStart( xTimer, 0 ) != pdPASS )
+                    if( xTimerStart( xCountJobTimer, 0 ) != pdPASS )
                     {
                         prvSendUpdateForJob( pcJobId, usJobIdLength, MAKE_STATUS_REPORT( "FAILED" ) );
                         LogError( ( "Failed to execute \"count\" job. Failed to start periodic timer" ) );
