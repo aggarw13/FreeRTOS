@@ -295,6 +295,14 @@ static BaseType_t xExitActionJobReceived = pdFALSE;
 static BaseType_t xDemoEncounteredError = pdFALSE;
 
 /**
+ * @brief A global flag which represents whether an executing "count" job has completed.
+ *
+ * @note When this flag is set, the demo task de-activates the periodic timer and sends
+ * a status update about the completed "count" job to the AWS IoT Jobs service.
+ */
+static BaseType_t xCountJobCompleted = pdFALSE;
+
+/**
  * @brief Statically allocated memory for the periodic timer used for the "count"
  * job.
  */
@@ -380,7 +388,7 @@ static void prvSendUpdateForJob( char * pcJobId,
  *
  * @param[in] xTimer The timer handle with which the callback is registered.
  */
-static void vTimerCallback( TimerHandle_t xTimer );
+static void prvTimerCallback( TimerHandle_t xTimer );
 
 /**
  * @brief Executes a job received from AWS IoT Jobs service and sends an update back to the service.
@@ -480,7 +488,7 @@ static void prvSendUpdateForJob( char * pcJobId,
     }
 }
 
-void vTimerCallback( TimerHandle_t xTimer )
+void prvTimerCallback( TimerHandle_t xTimer )
 {
     uint32_t ulCount;
 
@@ -496,12 +504,10 @@ void vTimerCallback( TimerHandle_t xTimer )
     /* If the timer has expired 10 times then stop it from running. */
     if( ulCount >= COUNT_JOB_MAX_COUNTER_VALUE )
     {
-        prvSendUpdateForJob( pcCounterJobId, usCounterJobIdLength, MAKE_STATUS_REPORT( "SUCCEEDED" ) );
-
-        /* Do not use a block time if calling a timer API function
-         * from a timer callback function, as doing so could cause a
-         * deadlock! */
-        xTimerStop( xTimer, 0 );
+   
+        /* Set the global flag to indicate that the counter has completed its count
+        *to the maximum value. */
+        xCountJobCompleted = pdTRUE;
     }
     else
     {
@@ -644,7 +650,7 @@ static void prvProcessJobDocument( MQTTPublishInfo_t * pxPublishInfo,
             case JOB_ACTION_COUNT:
                 LogInfo( ( "Received job contains \"count\" action. Starting the periodic counter." ) );
 
-                if( xTimerIsTimerActive( xCountJobTimer ) != pdFALSE )
+                if((xCountJobTimer != NULL) && (xTimerIsTimerActive( xCountJobTimer ) == pdTRUE ))
                 {
                     LogError( ( "Entered incorrect program state. Terminating demo." ) );
 
@@ -660,7 +666,7 @@ static void prvProcessJobDocument( MQTTPublishInfo_t * pxPublishInfo,
                         pdMS_TO_TICKS( COUNT_JOB_TIMER_PERIOD ),
                         pdTRUE,
                         ( void * ) 0,
-                        vTimerCallback,
+                        prvTimerCallback,
                         &xTimerBuffer );
                 }
 
@@ -677,6 +683,9 @@ static void prvProcessJobDocument( MQTTPublishInfo_t * pxPublishInfo,
                     }
                     else
                     {
+                        /* Reset the global flag to indicate that there is a currently active job. */
+                        xCountJobCompleted = pdFALSE;
+
                         prvSendUpdateForJob( pcJobId, usJobIdLength, MAKE_STATUS_REPORT( "IN_PROGRESS" ) );
                     }
                 }
@@ -742,11 +751,11 @@ static void prvNextJobHandler( MQTTPublishInfo_t * pxPublishInfo,
                 /* Process notification from the NextJobExecutionChanged API.*/
 
                 /* Check if there is an already running "count" job.*/
-                if( xTimerIsTimerActive( xCountJobTimer ) == pdTRUE )
+                if((xCountJobTimer != NULL) && (xTimerIsTimerActive( xCountJobTimer ) == pdTRUE ))
                 {
                     LogWarn( ( "Received notification of a new job while the \"count\" job is executing. "
                                "Sending a \"REJECTED\" update to the service: NewJobId=%.*s",
-                               usJobIdLength, pcJobId ) );
+                                ulJobIdLength, pcJobId ) );
                     prvSendUpdateForJob( pcJobId, ( uint16_t ) ulJobIdLength, MAKE_STATUS_REPORT( "REJECTED" ) );
                 }
                 else
@@ -815,7 +824,7 @@ static void prvEventCallback( MQTTContext_t * pxMqttContext,
             }
             else if( xTopicType == JobsUpdateSuccess )
             {
-                LogInfo( ( "Job update status request has been accepted by AWS Iot Jobs service." ) );
+                LogInfo( ( "Job update status request has been accepted by AWS IoT Jobs service." ) );
             }
             else if( xTopicType == JobsStartNextFailed )
             {
@@ -1014,6 +1023,20 @@ void prvJobsDemoTask( void * pvParameters )
             LogError( ( "Failed to receive notification about next pending job: "
                         "MQTT_ProcessLoop failed" ) );
         }
+
+        /* Check if "count" job completion flag is set. If the job has completed, then we will
+        send an update about the job to the server. */
+        if (xCountJobCompleted == pdTRUE)
+        {
+            /* Stop the periodic timer running the "count" job as the counter has reached its maximum value. */
+            xTimerStop(xCountJobTimer, pdMS_TO_TICKS(100));
+
+            prvSendUpdateForJob(pcCounterJobId, usCounterJobIdLength, MAKE_STATUS_REPORT("SUCCEEDED"));
+
+            /* Reset the flag. */
+            xCountJobCompleted = pdFALSE;
+        }
+
     }
 
     /* Unsubscribe from the NextJobExecutionChanged API topic. */
