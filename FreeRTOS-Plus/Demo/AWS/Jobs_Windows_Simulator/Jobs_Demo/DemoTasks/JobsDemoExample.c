@@ -504,9 +504,8 @@ void prvTimerCallback( TimerHandle_t xTimer )
     /* If the timer has expired 10 times then stop it from running. */
     if( ulCount >= COUNT_JOB_MAX_COUNTER_VALUE )
     {
-   
         /* Set the global flag to indicate that the counter has completed its count
-        *to the maximum value. */
+         * to the maximum value. */
         xCountJobCompleted = pdTRUE;
     }
     else
@@ -650,7 +649,7 @@ static void prvProcessJobDocument( MQTTPublishInfo_t * pxPublishInfo,
             case JOB_ACTION_COUNT:
                 LogInfo( ( "Received job contains \"count\" action. Starting the periodic counter." ) );
 
-                if((xCountJobTimer != NULL) && (xTimerIsTimerActive( xCountJobTimer ) == pdTRUE ))
+                if( ( xCountJobTimer != NULL ) && ( xTimerIsTimerActive( xCountJobTimer ) == pdTRUE ) )
                 {
                     LogError( ( "Entered incorrect program state. Terminating demo." ) );
 
@@ -751,7 +750,7 @@ static void prvNextJobHandler( MQTTPublishInfo_t * pxPublishInfo,
                 /* Process notification from the NextJobExecutionChanged API.*/
 
                 /* Check if there is an already running "count" job.*/
-                if((xCountJobTimer != NULL) && (xTimerIsTimerActive( xCountJobTimer ) == pdTRUE ))
+                if( ( xCountJobTimer != NULL ) && ( xTimerIsTimerActive( xCountJobTimer ) == pdTRUE ) )
                 {
                     LogWarn( ( "Received notification of a new job while the \"count\" job is executing. "
                                "Sending a \"REJECTED\" update to the service: NewJobId=%.*s",
@@ -1025,18 +1024,17 @@ void prvJobsDemoTask( void * pvParameters )
         }
 
         /* Check if "count" job completion flag is set. If the job has completed, then we will
-        send an update about the job to the server. */
-        if (xCountJobCompleted == pdTRUE)
+         * send an update about the job to the server. */
+        if( xCountJobCompleted == pdTRUE )
         {
             /* Stop the periodic timer running the "count" job as the counter has reached its maximum value. */
-            xTimerStop(xCountJobTimer, pdMS_TO_TICKS(100));
+            xTimerStop( xCountJobTimer, pdMS_TO_TICKS( 100 ) );
 
-            prvSendUpdateForJob(pcCounterJobId, usCounterJobIdLength, MAKE_STATUS_REPORT("SUCCEEDED"));
+            prvSendUpdateForJob( pcCounterJobId, usCounterJobIdLength, MAKE_STATUS_REPORT( "SUCCEEDED" ) );
 
             /* Reset the flag. */
             xCountJobCompleted = pdFALSE;
         }
-
     }
 
     /* Unsubscribe from the NextJobExecutionChanged API topic. */
