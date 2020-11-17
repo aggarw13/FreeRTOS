@@ -755,7 +755,7 @@ static void prvNextJobHandler( MQTTPublishInfo_t * pxPublishInfo,
                 {
                     LogWarn( ( "Received notification of a new job while the \"count\" job is executing. "
                                "Sending a \"REJECTED\" update to the service: NewJobId=%.*s",
-                                ulJobIdLength, pcJobId ) );
+                               ulJobIdLength, pcJobId ) );
                     prvSendUpdateForJob( pcJobId, ( uint16_t ) ulJobIdLength, MAKE_STATUS_REPORT( "REJECTED" ) );
                 }
                 else
