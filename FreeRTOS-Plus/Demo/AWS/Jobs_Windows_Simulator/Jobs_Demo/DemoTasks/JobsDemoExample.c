@@ -753,11 +753,17 @@ static void prvNextJobHandler( MQTTPublishInfo_t * pxPublishInfo,
                 if( ( xCountJobTimer != NULL ) && ( xTimerIsTimerActive( xCountJobTimer ) == pdTRUE ) )
                 {
                     LogWarn( ( "Received notification of a new job while the \"count\" job is executing. "
-                               "Sending a \"REJECTED\" update to the service: NewJobId=%.*s",
+                               "Sending an \"IN_PROGRESS\" update to the service: NewJobId=%.*s",
                                ulJobIdLength, pcJobId ) );
-                    prvSendUpdateForJob( pcJobId, ( uint16_t ) ulJobIdLength, MAKE_STATUS_REPORT( "REJECTED" ) );
+
+                    /* Check if the "count" job has been cancelled on AWS IoT Jobs service by send an update
+                     * that the running "count" job is still active on the device. If the update is rejected,
+                     * the timer will be stopped to terminate the job on the device. */
+                    prvSendUpdateForJob( pcCounterJobId, usCounterJobIdLength, MAKE_STATUS_REPORT( "IN_PROGRESS" ) );
                 }
-                else
+
+                /* Check again if there is still an active "count" job. */
+                if( ( xCountJobTimer != NULL ) && ( xTimerIsTimerActive( xCountJobTimer ) == pdTRUE ) )
                 {
                     /* As there is no currently running job, we can process the notification about
                      * the next pending job and execute it. */
@@ -842,7 +848,7 @@ static void prvEventCallback( MQTTContext_t * pxMqttContext,
                     ( strncmp( pcJobId, pcCounterJobId, usCounterJobIdLength ) == 0 ) )
                 {
                     /* Cancel the periodic counter job as the job may have been canceled on the service. */
-                    xTimerStop( xCountJobTimer, 0 );
+                    xTimerStop( xCountJobTimer, pdMS_TO_TICKS( 100 ) );
 
                     LogWarn( ( "Terminating the running \"count\" job. Job may have been canceled on service. JobId=%.*s",
                                usJobIdLength, pcJobId ) );
