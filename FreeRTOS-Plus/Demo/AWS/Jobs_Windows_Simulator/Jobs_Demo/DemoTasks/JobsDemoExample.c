@@ -760,14 +760,26 @@ static void prvNextJobHandler( MQTTPublishInfo_t * pxPublishInfo,
                      * that the running "count" job is still active on the device. If the update is rejected,
                      * the timer will be stopped to terminate the job on the device. */
                     prvSendUpdateForJob( pcCounterJobId, usCounterJobIdLength, MAKE_STATUS_REPORT( "IN_PROGRESS" ) );
+
+                    /* Wait for response from the UpdateJobExecution API for the status update sent for the
+                     * "count" job .*/
+                    if( MQTT_ProcessLoop( &xMqttContext, 300U ) != MQTTSuccess )
+                    {
+                        xDemoEncounteredError = pdTRUE;
+                        LogError( ( "Failed to receive notification about next pending job: "
+                                    "MQTT_ProcessLoop failed" ) );
+                    }
                 }
 
                 /* Check again if there is still an active "count" job. */
-                if( ( xCountJobTimer != NULL ) && ( xTimerIsTimerActive( xCountJobTimer ) == pdTRUE ) )
+                if( xDemoEncounteredError == pdFALSE )
                 {
-                    /* As there is no currently running job, we can process the notification about
-                     * the next pending job and execute it. */
-                    prvProcessJobDocument( pxPublishInfo, pcJobId, ( uint16_t ) ulJobIdLength );
+                    if( ( xCountJobTimer != NULL ) && ( xTimerIsTimerActive( xCountJobTimer ) == pdTRUE ) )
+                    {
+                        /* As there is no currently running job, we can process the notification about
+                         * the next pending job and execute it. */
+                        prvProcessJobDocument( pxPublishInfo, pcJobId, ( uint16_t ) ulJobIdLength );
+                    }
                 }
             }
         }
