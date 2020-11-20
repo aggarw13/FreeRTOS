@@ -774,7 +774,7 @@ static void prvNextJobHandler( MQTTPublishInfo_t * pxPublishInfo,
                 /* Check again if there is still an active "count" job. */
                 if( xDemoEncounteredError == pdFALSE )
                 {
-                    if( ( xCountJobTimer != NULL ) && ( xTimerIsTimerActive( xCountJobTimer ) == pdTRUE ) )
+                    if( ( xCountJobTimer == NULL ) || ( xTimerIsTimerActive( xCountJobTimer ) == pdFALSE ) )
                     {
                         /* As there is no currently running job, we can process the notification about
                          * the next pending job and execute it. */
