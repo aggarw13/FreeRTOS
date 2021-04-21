@@ -53,7 +53,7 @@ jobs:
       - name: Upload doxygen artifact if main branch
         uses: actions/upload-artifact@v2
         with:
-          name: doxygen.zip
+          name: doxygen.zip-${GITHUB_SHA}
           path: ./freertos/doxygen.zip
           retention-days: 2
 
